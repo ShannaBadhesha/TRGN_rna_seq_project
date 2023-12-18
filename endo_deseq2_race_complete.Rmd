@@ -1,0 +1,471 @@
+---
+title: "Endo_Ctrl"
+author: "Shanna Badhesha"
+date: "2023-03-17"
+output: html_document
+---
+
+## R Markdown
+```{r}
+#setwd("DESeq_vignette_R.Rmd")
+library("rmarkdown")
+```
+
+```{r}
+#Loading in the compGenomRData package to access the files needed to run the analysis 
+#install.packages("devtools")
+#devtools::install_github("compgenomr/compGenomRData")
+#library("compGenomRData")
+```
+
+```{r}
+#Loading in the DeSeq2 package
+#if (!require("BiocManager", quietly = TRUE))
+  #install.packages("BiocManager")
+
+#BiocManager::install("DESeq2")
+library("DESeq2")
+```
+
+```{r}
+#Import the read counts and colData tables 
+setwd("/Users/usc-shannabadhesha/Desktop/Dr.Velazquez_lab/Endo_patients")
+
+counts_file <- read.table("endo_ctrl_rawcounts7.tsv", header=TRUE, sep="\t", row.names=1)
+coldata_file <- read.table("endo_ctrl_coldata4.tsv", header=TRUE, sep="\t", row.names=1)
+
+```
+
+
+```{r}
+#creating a new matrix called counts that reads in the data from counts_file (raw RNA-seq counts data)
+counts <- as.matrix(counts_file)
+
+#looking at a summary of the first three columns of the counts matrix 
+summary(counts_file[,1:3])
+```
+
+```{r}
+#calculating the cpm(counts per million) raw read counts are divided by the library size and multiplied by one million
+cpm <- apply(subset(counts_file, select = c(-width)), 2, 
+             function(x) x/sum(as.numeric(x)) * 10^6)
+
+#sum of each of the columns from the cpm calculations and checking that it equals 10^6 after normalization
+colSums(cpm)
+```
+
+```{r}
+#8.3.5.2 Computing RPKM
+
+#create a vector of gene lengths 
+geneLengths <- as.vector(subset(counts, select = c(width)))
+
+#compute rpkm 
+#rpkm values are calculated by dividing the number of reads that map to a gene by the length of the gene and the total number of reads in the experiment, and then normalizing this value to one million
+rpkm <- apply(X = subset(counts, select = c(-width)),
+              MARGIN = 2, 
+              FUN = function(x) {
+                10^9 * x / geneLengths / sum(as.numeric(x))
+              })
+
+#Look at the sample size of rpkm calculations
+colSums(rpkm)
+```
+
+```{r}
+#8.3.5.3 Computing TPM
+
+#find gene length normalized values 
+rpk <- apply( subset(counts, select = c(-width)), 2, 
+              function(x) x/(geneLengths/1000))
+
+#normalize by the sample size using rpk values (dividing the number of reads that map to a gene by the effective length of that gene (the length of the gene adjusted for sequencing bias) and the total number of reads in the experiment, and then normalizing this value to one million)
+tpm <- apply(rpk, 2, function(x) x / sum(as.numeric(x)) * 10^6)
+
+#Checking the sum of each of the tpm calculated columns
+colSums(tpm)
+```
+
+```{r}
+#compute the variance of each gene across samples
+V <- apply(tpm, 1, var)
+
+#sort the results by variance in decreasing order 
+#and select the top 100 genes 
+selectedGenes <- names(V[order(V, decreasing = T)][1:100])
+```
+
+```{r}
+#load in pheatmap library
+#install.packages("pheatmap")
+library(pheatmap)
+```
+
+```{r}
+#create heatmap using the selected genes and the gene expression levels calculated by tpm
+#rows are scaled to have a mean of zero and a standard deviation of one and row names not displayed
+pheatmap(tpm[selectedGenes,], scale = 'row', show_rownames = FALSE)
+
+#creating coldata that will read the original coldata_file
+colData <- read.table("/Users/usc-shannabadhesha/Desktop/Dr.Velazquez_lab/Endo_patients/endo_ctrl_coldata4.tsv", header = T, sep = '\t', row.names=1)
+
+#overlay the data w/ the color of each sample group so that we see if there are samples that dont cluster properly together in their respective groups 
+pheatmap(tpm[selectedGenes,], scale = 'row', 
+         show_rownames = FALSE, 
+         annotation_col = colData)
+```
+
+```{r}
+#import in library stats and ggplot2
+library(stats)
+#install.packages("ggplot2")
+library(ggplot2)
+#install.packages("ggfortify")
+library(ggfortify)
+
+#transpose the matrix (switching the rows and columns between each other)
+M <- t(tpm[selectedGenes,])
+# transform the counts to log2 scale 
+M <- log2(M + 1)
+#compute PCA 
+pcaResults <- prcomp(M)
+```
+
+```{r}
+#plot PCA results making use of ggplot2's autoplot function
+#ggfortify is needed to let ggplot2 know about PCA data structure. 
+autoplot(pcaResults, data = colData, colour = "group")
+
+#summary of the pca results
+summary(pcaResults)
+```
+
+```{r}
+#import in library stats
+library(stats)
+
+#run correlation on the tpm 
+correlationMatrix <- cor(tpm)
+
+#import corrplot to create a visualization of the corrections
+#install.packages("corrplot")
+library(corrplot)
+
+#create correlation plot of samples ordered by hierarchical clustering
+corrplot(correlationMatrix, order = 'hclust', 
+         addrect = 2, addCoef.col = 'white', 
+         number.cex = 0.7) 
+```
+
+```{r}
+#load in pheatmap library
+library(pheatmap)
+#split the clusters into two based on the clustering similarity 
+pheatmap(correlationMatrix,  
+         annotation_col = colData, 
+         cutree_cols = 2)
+```
+
+```{r}
+#remove the 'width' column
+countData <- as.matrix(subset(counts, select = c(-width)))
+#define the experimental setup 
+colData <- read.table("/Users/usc-shannabadhesha/Desktop/Dr.Velazquez_lab/Endo_patients/endo_ctrl_coldata4.tsv", header = T, sep = '\t', row.names=1)
+#define the design formula
+designFormula <- "~ group"
+```
+
+```{r}
+#run DESeq2
+library(DESeq2)
+library(stats)
+#create a DESeq dataset object from the count matrix and the colData 
+dds <- DESeqDataSetFromMatrix(countData = countData, 
+                              colData = colData, 
+                              design = as.formula(designFormula))
+#print dds object to see the contents
+print(dds)
+```
+
+```{r}
+#For each gene, we count the total number of reads for that gene in all samples 
+#and remove those that don't have at least 1 read. 
+dds <- dds[ rowSums(DESeq2::counts(dds)) > 1, ]
+
+dds <- DESeq(dds)
+
+#compute the contrast for the 'group' variable where 'CTRL' 
+#samples are used as the control group. 
+DEresults = results(dds, contrast = c("group", 'CASE', 'CTRL'))
+#sort results by increasing p-value
+DEresults <- DEresults[order(DEresults$pvalue),]
+
+#shows a summary of the results
+print(DEresults)
+```
+```{r}
+# Extract results
+res <- results(dds)
+
+# Filter for differentially expressed genes
+resSig <- subset(res, padj < 0.05)
+
+# Separate upregulated and downregulated genes
+upregulated <- subset(resSig, log2FoldChange > 0)
+downregulated <- subset(resSig, log2FoldChange < 0)
+
+# Write to CSV files
+write.csv(as.data.frame(upregulated), file = "upregulated_genes.csv")
+write.csv(as.data.frame(downregulated), file = "downregulated_genes.csv")
+```
+
+
+
+```{r}
+library(DESeq2)
+DESeq2::plotMA(object = dds, ylim = c(-5, 5))
+
+library(ggplot2)
+ggplot(data = as.data.frame(DEresults), aes(x = pvalue)) + 
+  geom_histogram(bins = 100)
+```
+
+```{r}
+library(DESeq2)
+# extract normalized counts from the DESeqDataSet object
+countsNormalized <- DESeq2::counts(dds, normalized = TRUE)
+
+# select top 500 most variable genes
+selectedGenes <- names(sort(apply(countsNormalized, 1, var), 
+                            decreasing = TRUE)[1:500])
+
+##
+#plotPCA(countsNormalized[selectedGenes,], 
+        #col = as.numeric(colData$group), adj = 0.5, 
+        #xlim = c(-0.5, 0.5), ylim = c(-0.6, 0.6))
+
+ggplot2::autoplot(prcomp(countsNormalized[selectedGenes,]), 
+        data = colData, colour = 'group', 
+        shape = 'group', label = TRUE)
+```
+
+```{r}
+rld <- rlog(dds)
+DESeq2::plotPCA(rld, ntop = 500, intgroup = 'group') + 
+  ylim(-50, 50) + theme_bw()
+```
+```{r}
+#if (!require("BiocManager", quietly = TRUE))
+  #install.packages("BiocManager")
+
+#BiocManager::install("EDASeq")
+
+```
+
+```{r}
+library("EDASeq")
+par(mfrow = c(1, 2))
+plotRLE(countData, outline=FALSE, ylim=c(-4, 4), 
+        col=as.numeric(colData$group), 
+        main = 'Raw Counts')
+plotRLE(DESeq2::counts(dds, normalized = TRUE), 
+        outline=FALSE, ylim=c(-4, 4), 
+        col = as.numeric(colData$group), 
+        main = 'Normalized Counts')
+```
+
+```{r}
+library(DESeq2)
+#install.packages("gProfileR")
+#library(gProfileR)
+library(gprofiler2)
+#install.packages("knitr")
+library(knitr)
+# extract differential expression results
+DEresults <- results(dds, contrast = c('group', 'CASE', 'CTRL'))
+
+#remove genes with NA values 
+DE <- DEresults[!is.na(DEresults$padj),]
+#select genes with adjusted p-values below 0.1
+DE <- DE[DE$padj < 0.1,]
+#select genes with absolute log2 fold change above 1 (two-fold change)
+DE <- DE[abs(DE$log2FoldChange) > 1,]
+
+#get the list of genes of interest
+genesOfInterest <- rownames(DE)
+
+#calculate enriched GO terms
+goResults <- gost(query = genesOfInterest, 
+                     organism = 'hsapiens', 
+                     sources = 'GO')
+```
+
+```{r}
+results_df <- goResults$result
+ordered_results_df <- results_df[order(results_df$p_value), ]
+goResults$results <- ordered_results_df
+```
+
+```{r}
+# Order the results by p-value
+results_ordered <- results_df[order(results_df$p_value), ]
+```
+
+```{r}
+# Install the rio package
+install.packages("rio")
+
+# Load the rio package
+library(rio)
+
+# Export 
+export(results_ordered, "go_results_ordered.csv")
+```
+
+
+
+#```{r}
+#Let's define the first gene set as the list of genes from one of the
+#significant GO terms found in the GO analysis. order go results by pvalue
+##goResults <- goResults[order(goResults$results$p.value),]
+
+#restrict the terms that have at most 100 genes overlapping with the query
+go <- goResults[goResults$overlap.size < 100,]
+# use the top term from this table to create a gene set 
+geneSet1 <- unlist(strsplit(go[1,]$intersection, ','))
+
+#Define another gene set by just randomly selecting 25 genes from the counts
+#table get normalized counts from DESeq2 results
+normalizedCounts <- DESeq2::counts(dds, normalized = TRUE)
+geneSet2 <- sample(rownames(normalizedCounts), 25)
+
+geneSets <- list('top_GO_term' = geneSet1,
+                 'random_set' = geneSet2)
+
+#```
+
+
+
+```{r}
+#if (!require("BiocManager", quietly = TRUE))
+  #install.packages("BiocManager")
+
+#BiocManager::install("gage")
+library(gage)
+#use the normalized counts to carry out a GSEA. 
+gseaResults <- gage(exprs = log2(normalizedCounts+1), 
+                    ref = match(rownames(colData[colData$group == 'CTRL',]), 
+                                colnames(normalizedCounts)), 
+                    samp = match(rownames(colData[colData$group == 'CASE',]), 
+                                 colnames(normalizedCounts)),
+                    gsets = geneSets, compare = 'as.group')
+```
+
+#```{r}
+library(pheatmap)
+# get the expression data for the gene set of interest
+M <- normalizedCounts[rownames(normalizedCounts) %in% geneSet1, ]
+# log transform the counts for visualization scaling by row helps visualizing
+# relative change of expression of a gene in multiple conditions
+#pheatmap(log2(M+1), 
+         annotation_col = colData, 
+         show_rownames = TRUE, 
+         fontsize_row = 8,
+         scale = 'row', 
+         cutree_cols = 2, 
+         cutree_rows = 2)
+#```
+
+```{r}
+library(pheatmap)
+#find gene length normalized values 
+geneCounts <- counts[[1]]
+
+rpk <- apply( subset(counts, select = c(-width)), 2, 
+              function(x) x/(geneLengths/1000))
+#normalize by the sample size using rpk values
+tpm <- apply(rpk, 2, function(x) x / sum(as.numeric(x)) * 10^6)
+
+selectedGenes <- names(sort(apply(tpm, 1, var), 
+                            decreasing = T)[1:100])
+pheatmap(tpm[selectedGenes,], 
+         scale = 'row',
+         annotation_col = colData, 
+         show_rownames = FALSE)
+```
+
+
+```{r}
+library(DESeq2)
+# remove the 'width' column from the counts matrix
+countData <- as.matrix(subset(counts, select = c(-width)))
+# set up a DESeqDataSet object
+dds <- DESeqDataSetFromMatrix(countData = countData, 
+                              colData = colData, 
+                              design = ~ group)
+```
+
+```{r}
+# run DESeq
+dds <- DESeq(dds)
+
+# extract results
+DEresults <- results(dds, contrast = c('group', 'CASE', 'CTRL'))
+```
+
+```{r}
+#counts_file <- system.file('extdata/rna-seq/SRP049988.raw_counts.tsv', 
+                           #package = 'compGenomRData')
+#colData_file <- system.file('extdata/rna-seq/SRP049988.colData.tsv', 
+                            #package = 'compGenomRData')
+
+#counts <- read.table(counts_file)
+#colData <- read.table(colData_file, header = T, 
+                      #sep = '\t', stringsAsFactors = TRUE)
+# simplify condition descriptions
+#colData$source_name <- ifelse(colData$group == 'CASE', 
+                              #'EHF_overexpression', 'Empty_Vector')
+```
+
+```{r}
+#find gene length normalized values 
+geneCounts <- counts[[1]]
+rpk <- apply( subset(counts, select = c(-width)), 2, 
+              function(x) x/(geneLengths/1000))
+#normalize by the sample size using rpk values
+tpm <- apply(rpk, 2, function(x) x / sum(as.numeric(x)) * 10^6)
+selectedGenes <- names(sort(apply(tpm, 1, var), 
+                            decreasing = T)[1:100])
+pheatmap(tpm[selectedGenes,], 
+         scale = 'row',
+         annotation_col = colData, 
+         cutree_cols = 2, 
+         show_rownames = FALSE)
+```
+
+```{r}
+library(EDASeq)
+# remove 'width' column from counts
+countData <- as.matrix(subset(counts, select = c(-width)))
+# create a seqExpressionSet object using EDASeq package 
+set <- newSeqExpressionSet(counts = countData,
+                           phenoData = colData)
+```
+
+```{r}
+# make an RLE plot and a PCA plot on raw count data and color samples by group
+par(mfrow = c(1,2))
+plotRLE(set, outline=FALSE, ylim=c(-4, 4), col=as.numeric(colData$group))
+plotPCA(set, col = as.numeric(colData$group), adj = 0.5, 
+        ylim = c(-0.7, 0.5), xlim = c(-0.5, 0.5))
+```
+
+```{r}
+## make RLE and PCA plots on TPM matrix 
+par(mfrow = c(1,2))
+plotRLE(tpm, outline=FALSE, ylim=c(-4, 4), col=as.numeric(colData$group))
+plotPCA(tpm, col=as.numeric(colData$group), adj = 0.5, 
+        ylim = c(-0.3, 1), xlim = c(-0.5, 0.5))
+```
+
+
